@@ -1,4 +1,4 @@
-# Web Server for LYOJ
+# Web Server
 
 Compile Command: `g++ main.cpp -o main -lpthread -lcrypto -lssl`
 
