@@ -1,7 +1,14 @@
 #include<bits/stdc++.h>
-#include"route.h"
-#include"mysqli.h"
+#include"httpd.h"
 using namespace std;
+
+string readFile(string path) {
+    ifstream t;
+    t.open(path.c_str());
+    std::stringstream buffer;
+    buffer << t.rdbuf();
+    return buffer.str();
+}
 
 int main(int argc, char *argv[]) {
     app.addRoute("/style/%s", [](client_conn conn, http_request request, param argv){
