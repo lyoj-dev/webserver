@@ -1,8 +1,17 @@
 #include<bits/stdc++.h>
 #include"route.h"
+#include"mysqli.h"
 using namespace std;
 
 int main(int argc, char *argv[]) {
+    app.addRoute("/style/%s", [](client_conn conn, http_request request, param argv){
+        string buffer = readFile("./css/" + argv[0]);
+        putRequest(conn, 200, merge(__default_response, mime(".css")), buffer);
+    });
+    app.addRoute("/script/%s", [](client_conn conn, http_request request, param argv){
+        string buffer = readFile("./js/" + argv[0]);
+        putRequest(conn, 200, merge(__default_response, mime(".js")), buffer);
+    });
     app.addRoute("/index", [](client_conn conn, http_request request, param argv){
         stringstream buffer;
         argvar $_GET = getParam(request);

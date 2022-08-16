@@ -1,11 +1,76 @@
 #ifndef _HTTPD_H_
 #define _HTTPD_H_
 
+#include<sys/socket.h>
+#include<sys/types.h>
+#include<sys/stat.h>
+#include<fcntl.h>
+#include<arpa/inet.h>
+#include<unistd.h>
+#include<openssl/ssl.h>
+#include<openssl/err.h>
+#include<pthread.h>
 using namespace std;
 typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";
 map<string, argvar> http_mime;
+
+/**
+ * @brief 发送信息
+ * 
+ * @param __fd 客户端连接符
+ * @param __buf 信息主体
+ * @return ssize_t 
+ */
+ssize_t send(int __fd, string __buf) {
+    return send(__fd, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
+}
+
+/**
+ * @brief 通过SSL发送信息
+ * 
+ * @param __fd 客户端ssl连接符
+ * @param __buf 信息主体
+ * @return ssize_t 
+ */
+ssize_t ssl_send(SSL* __fd, string __buf) {
+    return SSL_write(__fd, const_cast<char*>(__buf.c_str()), __buf.size()); 
+}
+
+/**
+ * @brief 接收信息
+ * 
+ * @param __fd 客户端连接符
+ * @return string 
+ */
+string recv(int __fd) {
+    const int length = 1024 * 1024;
+    char __buf[length] = "";
+    memset(__buf, '\0', sizeof __buf);
+    int s = recv(__fd, __buf, sizeof __buf, 0);
+    if (s == -1) {
+        cout << "Failed to recieve data!" << endl;
+        exit(3);
+    } return __buf;
+}
+
+/**
+ * @brief 通过SSL接收信息
+ * 
+ * @param __fd 客户端连接符
+ * @return string 
+ */
+string ssl_recv(SSL* __fd) {
+    const int length = 1024 * 1024;
+    char __buf[length] = "";
+    memset(__buf, '\0', sizeof __buf);
+    int s = SSL_read(__fd, __buf, sizeof __buf);
+    if (s < 0) {
+        cout << "Failed to recieve data!" << endl;
+        exit(3);
+    } return __buf;
+}
 
 struct http_request {
     string method = "";
@@ -111,14 +176,13 @@ void http_init() {
         OpenSSL_add_all_algorithms();
         /** 载入所有 SSL 错误消息 */
         SSL_load_error_strings();
-        /** 以 SSL V2 和 V3 标准兼容方式产生一个 SSL_CTX ，即 SSL Content Text */
+        /** 初始化SSL_CTX */
         ctx = SSL_CTX_new(SSLv23_server_method());
-        /** 也可以用 SSLv2_server_method() 或 SSLv3_server_method() 单独表示 V2 或 V3标准 */
         if (ctx == NULL) {
             cout << "Failed to create new ctx!" << endl;
             exit(3);
         }
-        /** 载入用户的数字证书， 此证书用来发送给客户端。 证书里包含有公钥 */
+        /** 载入用户的数字证书 */
         if (SSL_CTX_use_certificate_file(ctx, http_cacert.c_str(), SSL_FILETYPE_PEM) <= 0) {
             cout << "Failed to load cacert!" << endl;
             exit(3);
@@ -384,19 +448,24 @@ argvar cookieParam(http_request request) {
     return $_COOKIE;
 }
 
-void print_r(argvar __arg) {
-    cout << "Array (" << endl;
-    for (auto it : __arg) {
-        cout << "\t[" << it.first << "] => " << it.second << endl;
-    } 
-    cout << ")" << endl;
-}
-
+/**
+ * @brief 合并两个数组
+ * 
+ * @param a 
+ * @param b 
+ * @return argvar 
+ */
 argvar merge(argvar a, argvar b) {
     for (auto it : b) a[it.first] = it.second;
     return a;
 }
 
+/**
+ * @brief 获取mime类型
+ * 
+ * @param ext 文件后缀名
+ * @return argvar 
+ */
 argvar mime(string ext) {
     argvar _r = _e;
     if (ext == ".aac") _r["Content-Type"] = "audio/aac";
@@ -472,6 +541,279 @@ argvar mime(string ext) {
     else if (ext == ".7z") _r["Content-Type"] = "application/x-7z-compressed";
     else _r["Content-Type"] = "text/plain";
     return _r;
+}
+
+typedef vector<string> param;
+
+class thread_pool {
+    private: 
+        pthread_t pt[1024 * 1024];
+        vector<int> connlist;
+        pthread_mutex_t g_mutex_lock;
+
+        int cnt = 0;
+        /**
+         * @brief 获取当前线程id
+         * 
+         * @return int 
+         */
+        int get_thread_id() {
+            pthread_mutex_lock(&g_mutex_lock);
+            int res = ++cnt;
+            pthread_mutex_unlock(&g_mutex_lock);
+            return res;
+        }
+
+        /**
+         * @brief 线程格式化输出
+         * 
+         * @param thread_id 线程id
+         * @param info 输出信息
+         */
+        void output(int thread_id, string info) {
+            pthread_mutex_lock(&g_mutex_lock);
+            cout << "[thread #" << thread_id << "] " << info << endl;
+            pthread_mutex_unlock(&g_mutex_lock);
+        }
+
+        /**
+         * @brief 获取客户端连接信息
+         * 
+         * @return int 
+         */
+        int getConn() {
+            pthread_mutex_lock(&g_mutex_lock);
+            int conn = connlist.size() ? *connlist.begin() : -1;
+            if (conn != -1) connlist.erase(connlist.begin());
+            pthread_mutex_unlock(&g_mutex_lock);
+            return conn;
+        }
+
+        void work_thread();
+
+        /**
+         * @brief 多线程预处理函数
+         * 
+         * @param arg 线程参数
+         * @return void* 
+         */
+        static void* pre_thread(void* arg) {
+            thread_pool* is = (thread_pool*)arg;
+            is->work_thread();
+            return (void*)NULL;
+        }
+
+    public:
+        /**
+         * @brief 初始化多线程
+         * 
+         * @param thread_num 线程数
+         */
+        void init(int thread_num) {
+            for (int i = 1; i <= thread_num; i++) {
+                pthread_create(&pt[i], NULL, pre_thread, (void*)this);
+            }
+        }
+
+        /**
+         * @brief 插入一个客户端连接
+         * 
+         * @param conn 客户端连接符
+         */
+        void addConn(int conn) {
+            connlist.push_back(conn);
+        }
+}pool;
+
+class application {
+    public: 
+        struct r {
+            string path;
+            function<void(client_conn, http_request, param)> main;
+            r(){}
+            r(string path, function<void(client_conn, http_request, param)> main):path(path),main(main){}
+        }; 
+        vector<r> route;
+
+        /**
+         * @brief 判断是否为整数
+         * 
+         * @param x 传入参数
+         * @return true 
+         * @return false 
+         */
+        bool isInt(string x) {
+            if (x.size() == 0) return false;
+            int st = 0; 
+            if (x[0] == '-') st++;
+            for (int i = st; i < x.size(); i++) 
+                if (x[i] < '0' || x[i] > '9') return false;
+            return true;
+        }
+
+        /**
+         * @brief 判断是否为小数
+         * 
+         * @param x 传入参数
+         * @return true 
+         * @return false 
+         */
+        bool isDouble(string x) {
+            if (x.size() == 0) return false;
+            bool pointed = false; int st = 0;
+            if (x[0] == '-') st++;
+            for (int i = st; i < x.size(); i++) {
+                if (x[i] == '.') {
+                    if (!pointed) pointed = true;
+                    else return false;
+                } else if (x[i] < '0' || x[i] > '9') return false;
+            } return true;
+        }
+
+        /**
+         * @brief 匹配路径
+         * 
+         * @param __route 路由结构体
+         * @param path 匹配串
+         * @return true 匹配成功
+         * @return false 匹配失败
+         */
+        bool matchPath(r __route, string path) {
+
+            /** 拆散字符串 */
+            vector<string> __goal = explode("/", __route.path.c_str());
+            vector<string> __path = explode("/", path.c_str());
+            if (__goal.size() != __path.size()) return false;
+
+            /** 逐个判断 */
+            for (int i = 0; i < __goal.size(); i++) {
+                if (__goal[i] == "%d" || __goal[i] == "%D") {
+                    if (!isInt(__path[i])) return false;
+                } else if (__goal[i] == "%f" || __goal[i] == "%F") {
+                    if (!isDouble(__path[i])) return false;
+                } else if (__goal[i] == "%s" || __goal[i] == "%S") {
+                    
+                } else {
+                    if (__goal[i] != __path[i]) return false;
+                }
+            } return true;
+        }
+
+        /**
+         * @brief 添加路由
+         * 
+         * @param path 路由路径
+         * @param func 执行函数
+         */
+        void addRoute(string path, function<void(client_conn, http_request, param)> func) {
+            route.push_back(r(path, func));
+        }
+
+        /**
+         * @brief 程序运行主函数
+         * 
+         * @param host 主机名
+         * @param port 运行端口
+         */
+        void run() {
+            http_init(); pool.init(http_thread_num);
+            while(1) {
+                int conn = accept();
+                pool.addConn(conn);
+            }
+        }
+
+        /**
+         * @brief 设置服务端选项
+         * 
+         * @param _t 选项类型 
+         * @param ... 选项值
+         * @return true 
+         * @return false 
+         */
+        bool setopt(int _t, ...) {
+            va_list arg;
+            va_start(arg, _t);
+            switch(_t) {
+                case HTTP_ENABLE_SSL: https = va_arg(arg, int); break;
+                case HTTP_LISTEN_HOST: http_host = va_arg(arg, const char*); break;
+                case HTTP_LISTEN_PORT: http_port = va_arg(arg, int); break;
+                case HTTP_SSL_CACERT: http_cacert = va_arg(arg, const char*); break;
+                case HTTP_SSL_PRIVKEY: http_privkey = va_arg(arg, const char*); break;
+                case HTTP_MULTI_THREAD: http_thread_num = va_arg(arg, int); break; 
+                default: return false;
+            }
+            return true;
+        }
+}app;
+
+/**
+ * @brief 工作线程主函数
+ * 
+ */
+void thread_pool::work_thread() {
+    int id = this->get_thread_id();
+    this->output(id, "Listening...");
+    while (1) {
+        setjmp(buf[id]);
+        int conn = this->getConn();
+        if (conn == -1) continue;
+
+        SSL* ssl;
+        if (https) {
+            /** 基于 ctx 产生一个新的 SSL */
+            ssl = SSL_new(ctx);
+            /** 将连接用户的 socket 加入到 SSL */
+            SSL_set_fd(ssl, conn);
+            if (SSL_accept(ssl) == -1) continue;
+        }
+        
+        /** 获取新连接 */
+        client_conn conn2;
+        conn2.conn = conn;
+        conn2.thread_id = id;
+        conn2.ssl = ssl;
+        http_request request = getRequest(conn2);
+        this->output(id, "New Connection: " + request.method + " " + request.path);
+
+        /** 提取路径 */
+        string rlpath = request.path;
+        if (rlpath.find("?") != string::npos) 
+            rlpath = rlpath.substr(0, rlpath.find("?"));
+
+        /** 分发路由 */
+        for (int i = 0; i < app.route.size(); i++) {
+            if (app.matchPath(app.route[i], rlpath)) {
+                /** 参数提取 */
+                param argv;
+                string __goal = app.route[i].path;
+                string __path = rlpath;
+                vector<string> __a1 = explode("/", __goal.c_str());
+                vector<string> __a2 = explode("/", __path.c_str());
+                for (int j = 0; j < __a1.size(); j++) 
+                    if (__a1[j] == "%d" || __a1[j] == "%D" ||
+                        __a1[j] == "%f" || __a1[j] == "%F" || 
+                        __a1[j] == "%s" || __a1[j] == "%S")
+                        argv.push_back(__a2[j]);
+
+                /** 主函数执行 */
+                app.route[i].main(conn2, request, argv);
+                putRequest(conn2, 200, __default_response, "");
+                break;
+            }
+        }
+
+        /** 无效路由 */
+        stringstream buffer;
+        buffer << "<html>" << endl;
+        buffer << "<head><title>404 Not Found</title></head>" << endl;
+        buffer << "<body>" << endl;
+        buffer << "<center><h1>404 Not Found</h1></center>" << endl;
+        buffer << "<hr><center>Made by <a href='https://github.com/LittleYang0531'>@LittleYang0531</a></center>" << endl;
+        buffer << "</body>" << endl;
+        buffer << "</html>" << endl;
+        putRequest(conn2, 404, __default_response, buffer.str());
+    }
 }
 
 #endif
