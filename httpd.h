@@ -11,6 +11,8 @@
 #include<openssl/err.h>
 #include<pthread.h>
 using namespace std;
+
+const string httpd_version = "1.0.0";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";
@@ -164,7 +166,7 @@ void http_init() {
     http_code[505] = "HTTP Version not supported";
 
     /** 设置默认响应头 */
-    __default_response["Server"] = "GNU C++ 14";
+    __default_response["Server"] = "Web Server Version " + httpd_version;
     __default_response["Access-Control-Allow-Origin"] = "*";
     __default_response["Connection"] = "Keep-Alive";
     __default_response["Content-Type"] = "text/html; charset=utf-8";
