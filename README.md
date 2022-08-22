@@ -1,4 +1,4 @@
-# Web Server
+# Web Server Core
 
 Compile Command: `g++ main.cpp -o main -lpthread -lcrypto -lssl`
 
