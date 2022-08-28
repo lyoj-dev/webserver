@@ -11,6 +11,10 @@ string readFile(string path) {
 }
 
 int main(int argc, char *argv[]) {
+    app.addRoute("/websocket", [](client_conn conn, http_request request, param argv){
+        string js = "<script src='./script/main.js'></script>";
+        putRequest(conn, 200, __default_response, js);
+    });
     app.addRoute("/style/%s", [](client_conn conn, http_request request, param argv){
         string buffer = readFile("./css/" + argv[0]);
         putRequest(conn, 200, merge(__default_response, mime(".css")), buffer);
@@ -32,17 +36,15 @@ int main(int argc, char *argv[]) {
         for (auto it : $_COOKIE) buffer << it.first << " " << it.second << _endl;
         putRequest(conn, 200, __default_response, buffer.str());
     });
-    app.addRoute("/problem/%d/%f/%s/index", [](client_conn conn, http_request request, param argv){
+    app.addRoute("/%d/%f/%s", [](client_conn conn, http_request request, param argv){
         stringstream buffer;
         buffer << argv[0] << " " << argv[1] << " " << argv[2] << endl;
         putRequest(conn, 200, __default_response, buffer.str());
     });
-    app.setopt(HTTP_ENABLE_SSL, true);
+    app.setopt(HTTP_ENABLE_SSL, false);
     app.setopt(HTTP_LISTEN_PORT, 8888);
-    app.setopt(HTTP_MULTI_THREAD, 32);
+    app.setopt(HTTP_MULTI_THREAD, 3);
     app.setopt(HTTP_LISTEN_HOST, "ALL");
-    app.setopt(HTTP_SSL_CACERT, "cert.pem");
-    app.setopt(HTTP_SSL_PRIVKEY, "privkey.pem");
     app.run();
     return 0;
 }
