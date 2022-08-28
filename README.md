@@ -1,13 +1,18 @@
-# Web Server Core
+# Web Server Core & WebSocket Server Core
 
-Compile Command: `g++ main.cpp -o main -lpthread -lcrypto -lssl`
+示例程序编译指令: 
+
+网站服务端: `g++ main.cpp -o main -lpthread -lcrypto -lssl`
+WebSocket 服务端: `g++ websocket.cpp -owebsocket -lpthread -lcrypto -lssl`
+
+## Web Server Core
 
 开发历程博客: 
 
 1. [lyoj-dev's blog](https://blog.lyoj.ml/archives/5/)
 2. [LittleYang0531's blog](https://blog.littleyang.ml/#/post/35)
 
-## 使用方法:
+### 使用方法:
 
 1. 引入 `httpd.h` 头文件
 2. 使用 app.addRoute(path, func) 添加路由
@@ -16,9 +21,9 @@ Compile Command: `g++ main.cpp -o main -lpthread -lcrypto -lssl`
 
 具体参考 `main.cpp` 里的代码
 
-## API 列表
+### API 列表
 
-### 另定义类型
+#### 另定义类型
 
 **映射参数列表 argvar**
 
@@ -54,7 +59,7 @@ struct client_conn {
 typedef vector<string> param;
 ```
 
-### 一些函数
+#### 一些函数
 
 **路由添加 void app.addRoute()**
 
