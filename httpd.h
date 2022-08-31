@@ -1,94 +1,32 @@
 #ifndef _HTTPD_H_
 #define _HTTPD_H_
+#define __windows__ (defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__))
 
+// 指定linux环境下头文件
+#ifdef __linux__ 
 #include<sys/socket.h>
 #include<sys/types.h>
 #include<sys/stat.h>
 #include<fcntl.h>
 #include<arpa/inet.h>
 #include<unistd.h>
+// 指定Windows环境下头文件 
+#elif __windows__
+#include<Windows.h>
+// 指定其他环境头文件 
+#else 
+#error("We only support Windows & Linux system! Sorry for that your system wasn't supported!")
+#endif
 #include<openssl/ssl.h>
 #include<openssl/err.h>
 #include<pthread.h>
 using namespace std;
 
-const string httpd_version = "1.0.0";
+const string httpd_version = "1.0.1";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";
 map<string, argvar> http_mime;
-
-/**
- * @brief 发送信息
- * 
- * @param __fd 客户端连接符
- * @param __buf 信息主体
- * @return ssize_t 
- */
-ssize_t send(int __fd, string __buf) {
-    return send(__fd, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
-}
-
-/**
- * @brief 通过SSL发送信息
- * 
- * @param __fd 客户端ssl连接符
- * @param __buf 信息主体
- * @return ssize_t 
- */
-ssize_t ssl_send(SSL* __fd, string __buf) {
-    return SSL_write(__fd, const_cast<char*>(__buf.c_str()), __buf.size()); 
-}
-
-/**
- * @brief 接收信息
- * 
- * @param __fd 客户端连接符
- * @return string 
- */
-string recv(int __fd) {
-    const int length = 1024 * 1024;
-    char __buf[length] = "";
-    memset(__buf, '\0', sizeof __buf);
-    int s = recv(__fd, __buf, sizeof __buf, 0);
-    if (s == -1) {
-        cout << "Failed to recieve data!" << endl;
-        exit(3);
-    } return __buf;
-}
-
-/**
- * @brief 通过SSL接收信息
- * 
- * @param __fd 客户端连接符
- * @return string 
- */
-string ssl_recv(SSL* __fd) {
-    const int length = 1024 * 1024;
-    char __buf[length] = "";
-    memset(__buf, '\0', sizeof __buf);
-    int s = SSL_read(__fd, __buf, sizeof __buf);
-    if (s < 0) {
-        cout << "Failed to recieve data!" << endl;
-        exit(3);
-    } return __buf;
-}
-
-struct http_request {
-    string method = "";
-    string path = "";
-    string protocol = "";
-    argvar argv;
-    string postdata;
-};
-
-struct client_conn {
-    int conn;
-    int thread_id;
-    SSL* ssl;
-};
-
-void putRequest(client_conn&, int, argvar, string);
 
 /** 全局参数列表 */
 #define HTTP_ENABLE_SSL 1
@@ -104,6 +42,58 @@ string http_privkey = "privkey.pem"; // 私钥路径
 #define HTTP_MULTI_THREAD 6
 int http_thread_num = 8; // 运行线程数
 /** 全局参数结束 */
+
+struct client_conn {
+    #ifdef __linux__
+    int conn;
+    #elif __windows__
+    SOCKET conn;
+    #endif
+    int thread_id;
+    SSL* ssl;
+};
+
+void exitRequest(client_conn&);
+void putRequest(client_conn&, int, argvar);
+
+/**
+ * @brief 发送信息
+ * 
+ * @param __fd 客户端连接符
+ * @param __buf 信息主体
+ * @return ssize_t 
+ */
+ssize_t send(client_conn __fd, string __buf) {
+    if (!https) return send(__fd.conn, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
+    else return SSL_write(__fd.ssl, const_cast<char*>(__buf.c_str()), __buf.size()); 
+}
+
+/**
+ * @brief 接收信息
+ * 
+ * @param __fd 客户端连接符
+ * @return string 
+ */
+string recv(client_conn __fd) {
+    const int length = 1024 * 1024;
+    char __buf[length] = "";
+    memset(__buf, '\0', sizeof __buf);
+    int s = -1;
+    if (!https) s = recv(__fd.conn, __buf, sizeof __buf, 0);
+    else s = SSL_read(__fd.ssl, __buf, sizeof __buf);
+    if (s == -1) {
+        cout << "Failed to recieve data!" << endl;
+        exitRequest(__fd);
+    } return __buf;
+}
+
+struct http_request {
+    string method = "";
+    string path = "";
+    string protocol = "";
+    argvar argv;
+    string postdata;
+};
 
 int sock;
 struct sockaddr_in server_address;
@@ -201,9 +191,22 @@ void http_init() {
         }    
     }
     
-
     /** 初始化服务端socket */
+    #ifdef __linux__
     bzero(&server_address, sizeof(server_address));
+    #elif __windows__
+	WORD w_req = MAKEWORD(2, 2);
+	WSADATA wsadata; int err;
+	err = WSAStartup(w_req, &wsadata);
+	if (err != 0) {
+        cout << "Failed to initialize SOCKET!" << endl;
+        exit(3);
+    }
+	if (LOBYTE(wsadata.wVersion) != 2 || HIBYTE(wsadata.wHighVersion) != 2) {
+        cout << "SOCKET version is not correct!" << endl;
+        exit(3);
+    }
+    #endif
     server_address.sin_family = AF_INET;
     server_address.sin_addr.s_addr = http_host == "ALL" ? htons(INADDR_ANY) : inet_addr(http_host.c_str());
     server_address.sin_port = htons(http_port);
@@ -214,8 +217,10 @@ void http_init() {
     }
 
     /** 绑定服务端socket */
+    #ifdef __linux__
     int opt = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    #endif
     int ret = bind(sock, (struct sockaddr*)&server_address, sizeof(server_address));
     if (ret == -1) {
         cout << "Failed to bind socket!" << endl;
@@ -231,7 +236,11 @@ void http_init() {
 }
 
 struct sockaddr_in client;
+#ifdef __linux__
 socklen_t client_addrlength = sizeof(client);
+#elif __windows__
+int client_addrlength = sizeof(client);
+#endif
 
 /**
  * @brief 接收客户端socket
@@ -270,7 +279,11 @@ vector<string> explode(const char* seperator, const char* source) {
  * @param conn 客户端连接符
  */
 void exitRequest(client_conn& conn) {
+    #ifdef __linux__
     close(conn.conn);
+    #elif __windows__
+    closesocket(conn.conn);
+    #endif
     longjmp(buf[conn.thread_id], 0);
 }
 
@@ -283,17 +296,24 @@ void exitRequest(client_conn& conn) {
 http_request getRequest(client_conn& conn) {
 
     /** 获取请求头 */
-    string s;
-    if (https) s = ssl_recv(conn.ssl);
-    else s = recv(conn.conn);
+    string s = recv(conn);
     if (s == "") exitRequest(conn);
 
     /** 判断请求方式 */
     vector<string> __arg = explode("\r\n", s.c_str());
     if (__arg.size() < 1) {
         cout << "Invalid HTTP request!" << endl;
-        cout << "Error Code: 0x01" << endl;
-        putRequest(conn, 500, __default_response, "Invalid HTTP request!");
+        stringstream buffer;
+        buffer << "<html>" << endl;
+        buffer << "<head><title>500 Internal Server Error</title></head>" << endl;
+        buffer << "<body>" << endl;
+        buffer << "<center><h1>500 Internal Server Error</h1></center>" << endl;
+        buffer << "<hr><center>Made by <a href='https://github.com/lyoj-dev/webserver'>webserver</a> v" << httpd_version << "</center>" << endl;
+        buffer << "</body>" << endl;
+        buffer << "</html>" << endl;
+        putRequest(conn, 500, __default_response);
+        send(conn, buffer.str());
+        exitRequest(conn);
     } 
 
     /** 读取请求头的第一行 */
@@ -304,7 +324,17 @@ http_request getRequest(client_conn& conn) {
         header[0] != "OPTIONS" && header[0] != "TRACE" && header[0] != "PATCH"
     )) {
         cout << "Invalid HTTP request!" << endl;
-        putRequest(conn, 500, __default_response, "Invalid HTTP request!");
+        stringstream buffer;
+        buffer << "<html>" << endl;
+        buffer << "<head><title>500 Internal Server Error</title></head>" << endl;
+        buffer << "<body>" << endl;
+        buffer << "<center><h1>500 Internal Server Error</h1></center>" << endl;
+        buffer << "<hr><center>Made by <a href='https://github.com/lyoj-dev/webserver'>webserver</a> v" << httpd_version << "</center>" << endl;
+        buffer << "</body>" << endl;
+        buffer << "</html>" << endl;
+        putRequest(conn, 500, __default_response);
+        send(conn, buffer.str());
+        exitRequest(conn);
     }
     http_request request;
     request.method = header[0];
@@ -336,12 +366,22 @@ http_request getRequest(client_conn& conn) {
  * @param argv 响应参数
  * @param content 输出内容
  */
-void putRequest(client_conn& conn, int code, argvar argv, string content) {
+void putRequest(client_conn& conn, int code, argvar argv) {
 
     /** 判断响应代码 */
     if (code <= 0 || code >= 1000 || http_code[code] == "") {
         cout << "Invalid Response Code!" << endl;
-        putRequest(conn, 500, __default_response, "Invalid Response Code!");
+        stringstream buffer;
+        buffer << "<html>" << endl;
+        buffer << "<head><title>500 Internal Server Error</title></head>" << endl;
+        buffer << "<body>" << endl;
+        buffer << "<center><h1>500 Internal Server Error</h1></center>" << endl;
+        buffer << "<hr><center>Made by <a href='https://github.com/lyoj-dev/webserver'>webserver</a> v" << httpd_version << "</center>" << endl;
+        buffer << "</body>" << endl;
+        buffer << "</html>" << endl;
+        putRequest(conn, 500, __default_response);
+        send(conn, buffer.str());
+        exitRequest(conn);
     } 
 
     /** 构造响应头 */
@@ -352,15 +392,7 @@ void putRequest(client_conn& conn, int code, argvar argv, string content) {
     __buf << "\r\n";
 
     /** 发送响应头 */
-    if (https) ssl_send(conn.ssl, __buf.str());
-    else send(conn.conn, __buf.str());
-
-    /** 发送内容 */
-    if (https) ssl_send(conn.ssl, content);
-    else send(conn.conn, content);
-
-    /** 结束此次请求 */
-    exitRequest(conn);
+    send(conn, __buf.str());
 }
 
 /**
@@ -719,6 +751,7 @@ class application {
          */
         void run() {
             http_init(); pool.init(http_thread_num);
+            cout << "Listening..." << endl;
             while(1) {
                 int conn = accept();
                 pool.addConn(conn);
@@ -755,7 +788,7 @@ class application {
  */
 void thread_pool::work_thread() {
     int id = this->get_thread_id();
-    this->output(id, "Listening...");
+    // this->output(id, "Listening...");
     while (1) {
         setjmp(buf[id]);
         int conn = this->getConn();
@@ -800,7 +833,9 @@ void thread_pool::work_thread() {
 
                 /** 主函数执行 */
                 app.route[i].main(conn2, request, argv);
-                putRequest(conn2, 200, __default_response, "");
+                putRequest(conn2, 200, __default_response);
+                send(conn2, "");
+                exitRequest(conn2);
                 break;
             }
         }
@@ -811,10 +846,12 @@ void thread_pool::work_thread() {
         buffer << "<head><title>404 Not Found</title></head>" << endl;
         buffer << "<body>" << endl;
         buffer << "<center><h1>404 Not Found</h1></center>" << endl;
-        buffer << "<hr><center>Made by <a href='https://github.com/LittleYang0531'>@LittleYang0531</a></center>" << endl;
+        buffer << "<hr><center>Made by <a href='https://github.com/lyoj-dev/webserver'>webserver</a> v" << httpd_version << "</center>" << endl;
         buffer << "</body>" << endl;
         buffer << "</html>" << endl;
-        putRequest(conn2, 404, __default_response, buffer.str());
+        putRequest(conn2, 404, __default_response);
+        send(conn2, buffer.str());
+        exitRequest(conn2);
     }
 }
 

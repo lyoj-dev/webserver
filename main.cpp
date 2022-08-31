@@ -13,15 +13,21 @@ string readFile(string path) {
 int main(int argc, char *argv[]) {
     app.addRoute("/websocket", [](client_conn conn, http_request request, param argv){
         string js = "<script src='./script/main.js'></script>";
-        putRequest(conn, 200, __default_response, js);
+        putRequest(conn, 200, __default_response);
+        send(conn, js);
+        exitRequest(conn);
     });
     app.addRoute("/style/%s", [](client_conn conn, http_request request, param argv){
         string buffer = readFile("./css/" + argv[0]);
-        putRequest(conn, 200, merge(__default_response, mime(".css")), buffer);
+        putRequest(conn, 200, merge(__default_response, mime(".css")));
+        send(conn, buffer);
+        exitRequest(conn);
     });
     app.addRoute("/script/%s", [](client_conn conn, http_request request, param argv){
         string buffer = readFile("./js/" + argv[0]);
-        putRequest(conn, 200, merge(__default_response, mime(".js")), buffer);
+        putRequest(conn, 200, merge(__default_response, mime(".js")));
+        send(conn, buffer);
+        exitRequest(conn);
     });
     app.addRoute("/index", [](client_conn conn, http_request request, param argv){
         stringstream buffer;
@@ -34,12 +40,16 @@ int main(int argc, char *argv[]) {
         for (auto it : $_POST) buffer << it.first << " " << it.second << _endl;
         buffer << "$_COOKIE: " << _endl;
         for (auto it : $_COOKIE) buffer << it.first << " " << it.second << _endl;
-        putRequest(conn, 200, __default_response, buffer.str());
+        putRequest(conn, 200, __default_response);
+        send(conn, buffer.str());
+        exitRequest(conn);
     });
     app.addRoute("/%d/%f/%s", [](client_conn conn, http_request request, param argv){
         stringstream buffer;
         buffer << argv[0] << " " << argv[1] << " " << argv[2] << endl;
-        putRequest(conn, 200, __default_response, buffer.str());
+        putRequest(conn, 200, __default_response);
+        send(conn, buffer.str());
+        exitRequest(conn);
     });
     app.setopt(HTTP_ENABLE_SSL, false);
     app.setopt(HTTP_LISTEN_PORT, 8888);

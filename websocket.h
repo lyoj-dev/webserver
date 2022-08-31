@@ -1,19 +1,29 @@
 #ifndef _WEBSOCKET_H_
 #define _WEBSOCKET_H_
+#define __windows__ (defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__))
 
+// 指定linux环境下头文件
+#ifdef __linux__ 
 #include<sys/socket.h>
 #include<sys/types.h>
 #include<sys/stat.h>
 #include<fcntl.h>
 #include<arpa/inet.h>
 #include<unistd.h>
+// 指定Windows环境下头文件 
+#elif __windows__
+#include<Windows.h>
+// 指定其他环境头文件 
+#else 
+#error("We only support Windows & Linux system! Sorry for that your system wasn't supported!")
+#endif
 #include<openssl/sha.h>
 #include<openssl/ssl.h>
 #include<openssl/err.h>
 #include<pthread.h>
 using namespace std;
 
-const string httpd_version = "1.0.0";
+const string httpd_version = "1.0.1";
 const string magic_string = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
@@ -125,10 +135,17 @@ struct http_request {
 };
 
 struct client_conn {
+    #ifdef __linux__
     int conn;
+    #elif __windows__
+    SOCKET conn;
+    #endif
     int thread_id;
     SSL* ssl;
 };
+
+void putRequest(client_conn&, int, argvar);
+void exitRequest(client_conn&);
 
 /** WebSocket数据收发相关函数 */
 const int http_len = 1 << 12;
@@ -167,19 +184,9 @@ int ws_recv_data(client_conn __fd, char __buf[http_len], int len) {
  * @param __buf 信息主体
  * @return ssize_t 
  */
-ssize_t send(int __fd, string __buf) {
-    return send(__fd, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
-}
-
-/**
- * @brief 通过SSL发送信息
- * 
- * @param __fd 客户端ssl连接符
- * @param __buf 信息主体
- * @return ssize_t 
- */
-ssize_t ssl_send(SSL* __fd, string __buf) {
-    return SSL_write(__fd, const_cast<char*>(__buf.c_str()), __buf.size()); 
+ssize_t send(client_conn __fd, string __buf) {
+    if (!https) return send(__fd.conn, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
+    else return SSL_write(__fd.ssl, const_cast<char*>(__buf.c_str()), __buf.size()); 
 }
 
 /**
@@ -237,37 +244,23 @@ ssize_t ws_send(client_conn __fd, string __buf, bool extra = false) {
     return s;
 }
 
+
 /**
  * @brief 接收信息
  * 
  * @param __fd 客户端连接符
  * @return string 
  */
-string recv(int __fd) {
+string recv(client_conn __fd) {
     const int length = 1024 * 1024;
     char __buf[length] = "";
     memset(__buf, '\0', sizeof __buf);
-    int s = recv(__fd, __buf, sizeof __buf, 0);
+    int s = -1;
+    if (!https) s = recv(__fd.conn, __buf, sizeof __buf, 0);
+    else s = SSL_read(__fd.ssl, __buf, sizeof __buf);
     if (s == -1) {
         cout << "Failed to recieve data!" << endl;
-        exit(3);
-    } return __buf;
-}
-
-/**
- * @brief 通过SSL接收信息
- * 
- * @param __fd 客户端连接符
- * @return string 
- */
-string ssl_recv(SSL* __fd) {
-    const int length = 1024 * 1024;
-    char __buf[length] = "";
-    memset(__buf, '\0', sizeof __buf);
-    int s = SSL_read(__fd, __buf, sizeof __buf);
-    if (s < 0) {
-        cout << "Failed to recieve data!" << endl;
-        exit(3);
+        exitRequest(__fd);
     } return __buf;
 }
 
@@ -362,8 +355,6 @@ string ws_recv(client_conn conn) {
     return res;
 }
 
-void putRequest(client_conn&, int, argvar);
-
 int sock;
 struct sockaddr_in server_address;
 string http_code[1010];
@@ -453,9 +444,22 @@ void http_init() {
             exit(3);
         }    
     }
-
     /** 初始化服务端socket */
+    #ifdef __linux__
     bzero(&server_address, sizeof(server_address));
+    #elif __windows__
+	WORD w_req = MAKEWORD(2, 2);
+	WSADATA wsadata; int err;
+	err = WSAStartup(w_req, &wsadata);
+	if (err != 0) {
+        cout << "Failed to initialize SOCKET!" << endl;
+        exit(3);
+    }
+	if (LOBYTE(wsadata.wVersion) != 2 || HIBYTE(wsadata.wHighVersion) != 2) {
+        cout << "SOCKET version is not correct!" << endl;
+        exit(3);
+    }
+    #endif
     server_address.sin_family = AF_INET;
     server_address.sin_addr.s_addr = http_host == "ALL" ? htons(INADDR_ANY) : inet_addr(http_host.c_str());
     server_address.sin_port = htons(http_port);
@@ -466,14 +470,10 @@ void http_init() {
     }
 
     /** 绑定服务端socket */
+    #ifdef __linux__
     int opt = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    int send_size = 1024 * 1024;
-    int optlen = sizeof(send_size); 
-    assert(setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &send_size, optlen) != -1); 
-    int recv_size = 1024 * 1024;
-    optlen = sizeof(recv_size); 
-    assert(setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &recv_size, optlen) != -1); 
+    #endif
     int ret = bind(sock, (struct sockaddr*)&server_address, sizeof(server_address));
     if (ret == -1) {
         cout << "Failed to bind socket!" << endl;
@@ -489,7 +489,11 @@ void http_init() {
 }
 
 struct sockaddr_in client;
+#ifdef __linux__
 socklen_t client_addrlength = sizeof(client);
+#elif __windows__
+int client_addrlength = sizeof(client);
+#endif
 
 /**
  * @brief 接收客户端socket
@@ -500,8 +504,7 @@ int accept() {
     int ret = accept(sock, (struct sockaddr*)&client, &client_addrlength);
     if (ret < 0) {
         cout << "Failed to accept request!" << endl;
-        // pthread_exit(NULL);
-        exit(0);
+        pthread_exit(NULL);
     }
     return ret;
 }
@@ -529,8 +532,11 @@ vector<string> explode(const char* seperator, const char* source) {
  * @param conn 客户端连接符
  */
 void exitRequest(client_conn& conn) {
+    #ifdef __linux__
     close(conn.conn);
-    // longjmp(buf[conn.thread_id], 0);
+    #elif __windows__
+    closesocket(conn.conn);
+    #endif
     pthread_exit(NULL);
 }
 
@@ -543,16 +549,13 @@ void exitRequest(client_conn& conn) {
 http_request getRequest(client_conn& conn) {
 
     /** 获取请求头 */
-    string s;
-    if (https) s = ssl_recv(conn.ssl);
-    else s = recv(conn.conn);
+    string s = recv(conn);
     if (s == "") exitRequest(conn);
 
     /** 判断请求方式 */
     vector<string> __arg = explode("\r\n", s.c_str());
     if (__arg.size() < 1) {
         cout << "Invalid HTTP request!" << endl;
-        cout << "Error Code: 0x01" << endl;
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     } 
@@ -615,8 +618,7 @@ void putRequest(client_conn& conn, int code, argvar argv) {
     __buf << "\r\n";
 
     /** 发送响应头 */
-    if (https) ssl_send(conn.ssl, __buf.str());
-    else send(conn.conn, __buf.str());
+    send(conn, __buf.str());
 }
 
 /**
@@ -814,6 +816,7 @@ class application {
          */
         void run() {
             http_init();
+            cout << "Listening..." << endl;
             while(1) {
                 int conn = accept();
                 pthread_t pt;
