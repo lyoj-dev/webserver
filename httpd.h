@@ -1,3 +1,14 @@
+/**
+ * @file httpd.h
+ * @author LittleYang0531 (dev@lyoj.ml)
+ * @brief Web服务器核心头文件
+ * @version 1.0.2
+ * @date 2022-09-01
+ * 
+ * @copyright Copyright (c) 2022 LittleYang0531
+ * 
+ */
+
 #ifndef _HTTPD_H_
 #define _HTTPD_H_
 #define __windows__ (defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__))
@@ -20,13 +31,15 @@
 #include<openssl/ssl.h>
 #include<openssl/err.h>
 #include<pthread.h>
+
 using namespace std;
 
-const string httpd_version = "1.0.1";
+const string httpd_version = "1.0.2";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";
 map<string, argvar> http_mime;
+pthread_mutex_t g_mutex_lock;
 
 /** 全局参数列表 */
 #define HTTP_ENABLE_SSL 1
@@ -57,6 +70,18 @@ void exitRequest(client_conn&);
 void putRequest(client_conn&, int, argvar);
 
 /**
+ * @brief 线程格式化输出
+ * 
+ * @param thread_id 线程id
+ * @param info 输出信息
+ */
+void output(int thread_id, string info) {
+    pthread_mutex_lock(&g_mutex_lock);
+    cout << "[thread #" << thread_id << "] " << info << endl;
+    pthread_mutex_unlock(&g_mutex_lock);
+}
+
+/**
  * @brief 发送信息
  * 
  * @param __fd 客户端连接符
@@ -66,6 +91,19 @@ void putRequest(client_conn&, int, argvar);
 ssize_t send(client_conn __fd, string __buf) {
     if (!https) return send(__fd.conn, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
     else return SSL_write(__fd.ssl, const_cast<char*>(__buf.c_str()), __buf.size()); 
+}
+
+/**
+ * @brief 以二进制形式发送信息
+ * 
+ * @param __fd 客户端连接符
+ * @param __buf 信息主体
+ * @param len 要发送的信息长度
+ * @return ssize_t 
+ */
+ssize_t send(client_conn __fd, char __buf[1024 * 1024], int len) {
+    if (!https) return send(__fd.conn, __buf, len, 0);
+    else return SSL_write(__fd.ssl, __buf, len); 
 }
 
 /**
@@ -82,7 +120,7 @@ string recv(client_conn __fd) {
     if (!https) s = recv(__fd.conn, __buf, sizeof __buf, 0);
     else s = SSL_read(__fd.ssl, __buf, sizeof __buf);
     if (s == -1) {
-        cout << "Failed to recieve data!" << endl;
+        output(__fd.thread_id, "Failed to recieve data!");
         exitRequest(__fd);
     } return __buf;
 }
@@ -302,7 +340,7 @@ http_request getRequest(client_conn& conn) {
     /** 判断请求方式 */
     vector<string> __arg = explode("\r\n", s.c_str());
     if (__arg.size() < 1) {
-        cout << "Invalid HTTP request!" << endl;
+        output(conn.thread_id, "Invalid HTTP Request!");
         stringstream buffer;
         buffer << "<html>" << endl;
         buffer << "<head><title>500 Internal Server Error</title></head>" << endl;
@@ -323,7 +361,7 @@ http_request getRequest(client_conn& conn) {
         header[0] != "PUT" && header[0] != "DELETE" && header[0] != "CONNECT" && 
         header[0] != "OPTIONS" && header[0] != "TRACE" && header[0] != "PATCH"
     )) {
-        cout << "Invalid HTTP request!" << endl;
+        output(conn.thread_id, "Invalid HTTP Request!");
         stringstream buffer;
         buffer << "<html>" << endl;
         buffer << "<head><title>500 Internal Server Error</title></head>" << endl;
@@ -370,7 +408,7 @@ void putRequest(client_conn& conn, int code, argvar argv) {
 
     /** 判断响应代码 */
     if (code <= 0 || code >= 1000 || http_code[code] == "") {
-        cout << "Invalid Response Code!" << endl;
+        output(conn.thread_id, "Invalid Response Code!");
         stringstream buffer;
         buffer << "<html>" << endl;
         buffer << "<head><title>500 Internal Server Error</title></head>" << endl;
@@ -392,7 +430,8 @@ void putRequest(client_conn& conn, int code, argvar argv) {
     __buf << "\r\n";
 
     /** 发送响应头 */
-    send(conn, __buf.str());
+    int s = send(conn, __buf.str());
+    if (s == -1) output(conn.thread_id, "Failed to send Response Header!");
 }
 
 /**
@@ -583,7 +622,6 @@ class thread_pool {
     private: 
         pthread_t pt[1024 * 1024];
         vector<int> connlist;
-        pthread_mutex_t g_mutex_lock;
 
         int cnt = 0;
         /**
@@ -596,18 +634,6 @@ class thread_pool {
             int res = ++cnt;
             pthread_mutex_unlock(&g_mutex_lock);
             return res;
-        }
-
-        /**
-         * @brief 线程格式化输出
-         * 
-         * @param thread_id 线程id
-         * @param info 输出信息
-         */
-        void output(int thread_id, string info) {
-            pthread_mutex_lock(&g_mutex_lock);
-            cout << "[thread #" << thread_id << "] " << info << endl;
-            pthread_mutex_unlock(&g_mutex_lock);
         }
 
         /**
@@ -750,6 +776,14 @@ class application {
          * @param port 运行端口
          */
         void run() {
+            sigset_t signal_mask;
+            sigemptyset(&signal_mask);
+            sigaddset(&signal_mask, SIGPIPE);
+            int rc = pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+            if (rc != 0) {
+                cout << "Failed to block SIGPIPE!" << endl;
+                exit(3);
+            }
             http_init(); pool.init(http_thread_num);
             cout << "Listening..." << endl;
             while(1) {
@@ -809,7 +843,7 @@ void thread_pool::work_thread() {
         conn2.thread_id = id;
         conn2.ssl = ssl;
         http_request request = getRequest(conn2);
-        this->output(id, "New Connection: " + request.method + " " + request.path);
+        output(id, "New Connection: " + request.method + " " + request.path);
 
         /** 提取路径 */
         string rlpath = request.path;

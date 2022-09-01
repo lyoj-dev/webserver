@@ -1,3 +1,14 @@
+/**
+ * @file websocket.h
+ * @author LittleYang0531 (dev@lyoj.ml)
+ * @brief WebSocket服务器核心头文件
+ * @version 1.0.2
+ * @date 2022-09-01
+ * 
+ * @copyright Copyright (c) 2022
+ * 
+ */
+
 #ifndef _WEBSOCKET_H_
 #define _WEBSOCKET_H_
 #define __windows__ (defined(WIN32) || defined(_WIN32) || defined(__WIN32__) || defined(__NT__))
@@ -29,6 +40,7 @@ typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";
 map<string, argvar> http_mime;
+pthread_mutex_t g_mutex_lock;
 
 /** 全局参数列表 */
 #define HTTP_ENABLE_SSL 1
@@ -47,6 +59,18 @@ const string base64_chars =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz"
         "0123456789+/";
+
+/**
+ * @brief 线程格式化输出
+ * 
+ * @param thread_id 线程id
+ * @param info 输出信息
+ */
+void output(int thread_id, string info) {
+    pthread_mutex_lock(&g_mutex_lock);
+    cout << "[thread #" << thread_id << "] " << info << endl;
+    pthread_mutex_unlock(&g_mutex_lock);
+}
 
 /**
  * @brief 判断是否为base64字符
@@ -171,7 +195,7 @@ int ws_recv_data(client_conn __fd, char __buf[http_len], int len) {
     if (!https) s = recv(__fd.conn, __buf, len, 0);
     else s = SSL_read(__fd.ssl, __buf, len);
     if (s == -1) {
-        cout << "Failed to recieve data!" << endl;
+        output(__fd.thread_id, "Failed to recieve data!");
         pthread_exit(NULL);
     }
     return s;
@@ -234,7 +258,7 @@ ssize_t ws_send(client_conn __fd, string __buf, bool extra = false) {
     if (!https) s = send(__fd.conn, dat, pt, 0);
     else s = SSL_write(__fd.ssl, dat, pt);
     if (s == -1) {
-        cout << "Failed to send data!" << endl;
+        output(__fd.thread_id, "Failed to send data frame!");
         pthread_exit(NULL);
     }
 
@@ -259,7 +283,7 @@ string recv(client_conn __fd) {
     if (!https) s = recv(__fd.conn, __buf, sizeof __buf, 0);
     else s = SSL_read(__fd.ssl, __buf, sizeof __buf);
     if (s == -1) {
-        cout << "Failed to recieve data!" << endl;
+        output(__fd.thread_id, "Failed to recieve data!");
         exitRequest(__fd);
     } return __buf;
 }
@@ -278,7 +302,7 @@ string ws_recv(client_conn conn) {
 
     /** 解析头数据 */
     if (s < 2) {
-        cout << "Invalid WebSocket Data Frame!" << endl;
+        output(conn.thread_id, "Invalid WebSocket Data Frame!");
         pthread_exit(NULL);
     }
     vector<int> frame0 = to2(__buf[0]);
@@ -299,7 +323,7 @@ string ws_recv(client_conn conn) {
         type = 1;
         s = ws_recv_data(conn, __buf, 2);
         if (s < 2) {
-            cout << "Invalid WebSocket Data Frame!" << endl;
+            output(conn.thread_id, "Invalid WebSocket Data Frame!");
             pthread_exit(NULL);
         }
         len = (getval(to2(__buf[0]), 0, 8) << 8) + getval(to2(__buf[1]), 0, 8);
@@ -310,7 +334,7 @@ string ws_recv(client_conn conn) {
         type = 2;
         s = ws_recv_data(conn, __buf, 8);
         if (s < 8) {
-            cout << "Invalid WebSocket Data Frame!" << endl;
+            output(conn.thread_id, "Invalid WebSocket Data Frame!");
             pthread_exit(NULL);
         }
         len = 0;
@@ -324,7 +348,7 @@ string ws_recv(client_conn conn) {
     int maskkey[4] = {0};
     s = ws_recv_data(conn, __buf, 4);
     if (s < 4) {
-        cout << "Invalid WebSocket Data Frame!" << endl;
+        output(conn.thread_id, "Invalid WebSocket Data Frame!"); 
         pthread_exit(NULL);
     }
     for (int i = 0; i < 4; i++) maskkey[i] = getval(to2(__buf[i]), 0, 8);
@@ -555,7 +579,7 @@ http_request getRequest(client_conn& conn) {
     /** 判断请求方式 */
     vector<string> __arg = explode("\r\n", s.c_str());
     if (__arg.size() < 1) {
-        cout << "Invalid HTTP request!" << endl;
+        output(conn.thread_id, "Invalid HTTP Request!");
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     } 
@@ -567,7 +591,7 @@ http_request getRequest(client_conn& conn) {
         header[0] != "PUT" && header[0] != "DELETE" && header[0] != "CONNECT" && 
         header[0] != "OPTIONS" && header[0] != "TRACE" && header[0] != "PATCH"
     )) {
-        cout << "Invalid HTTP request!" << endl;
+        output(conn.thread_id, "Invalid HTTP Request!");
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     }
@@ -605,7 +629,7 @@ void putRequest(client_conn& conn, int code, argvar argv) {
 
     /** 判断响应代码 */
     if (code <= 0 || code >= 1000 || http_code[code] == "") {
-        cout << "Invalid Response Code!" << endl;
+        output(conn.thread_id, "Invalid Response Code!");
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     }
@@ -618,7 +642,8 @@ void putRequest(client_conn& conn, int code, argvar argv) {
     __buf << "\r\n";
 
     /** 发送响应头 */
-    send(conn, __buf.str());
+    int s = send(conn, __buf.str());
+    if (s == -1) output(conn.thread_id, "Invalid send Response Header!");
 }
 
 /**
@@ -815,6 +840,14 @@ class application {
          * @param port 运行端口
          */
         void run() {
+            sigset_t signal_mask;
+            sigemptyset(&signal_mask);
+            sigaddset(&signal_mask, SIGPIPE);
+            int rc = pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
+            if (rc != 0) {
+                cout << "Failed to block SIGPIPE!" << endl;
+                exit(3);
+            }
             http_init();
             cout << "Listening..." << endl;
             while(1) {
@@ -848,7 +881,6 @@ class application {
 }app;
 
 int cnt = 0;
-pthread_mutex_t g_mutex_lock;
 /**
  * @brief 获取当前线程id
  * 
@@ -859,18 +891,6 @@ int get_thread_id() {
     int res = ++cnt;
     pthread_mutex_unlock(&g_mutex_lock);
     return res;
-}
-
-/**
- * @brief 线程格式化输出
- * 
- * @param thread_id 线程id
- * @param info 输出信息
- */
-void output(int thread_id, string info) {
-    pthread_mutex_lock(&g_mutex_lock);
-    cout << "[thread #" << thread_id << "] " << info << endl;
-    pthread_mutex_unlock(&g_mutex_lock);
 }
 
 /**

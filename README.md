@@ -3,6 +3,7 @@
 示例程序编译指令: 
 
 网站服务端: `g++ main.cpp -o main -lpthread -lcrypto -lssl`
+
 WebSocket 服务端: `g++ websocket.cpp -owebsocket -lpthread -lcrypto -lssl`
 
 ## Web Server Core
@@ -21,73 +22,40 @@ WebSocket 服务端: `g++ websocket.cpp -owebsocket -lpthread -lcrypto -lssl`
 
 具体参考 `main.cpp` 里的代码
 
-### API 列表
+### 样例文件
 
-#### 另定义类型
+实现断点续传功能: [file.cpp](https://github.com/lyoj-dev/webserver/blob/main/example/webserver/file.cpp)
 
-**映射参数列表 argvar**
+## WebSocket Server Core
 
-```cpp
-typedef map<string, string> argvar;
-```
+开发历程博客: 
 
-**HTTP请求 http_request**
+~~暂无博客~~
 
-```cpp
-struct http_request {
-    string method = ""; // 请求方法
-    string path = ""; // 请求路径
-    string protocol = ""; // 请求协议
-    argvar argv; // 请求头参数
-    string postdata; // POST数据
-};
-```
+### 使用方法:
 
-**客户端连接符 client_conn**
+1. 引入 `websocket.h` 头文件
+2. 使用 app.addRoute(path, func) 添加路由
+3. 使用 app.setopt(key, value) 设置运行参数
+4. 使用 app.run() 运行 webserver
 
-```cpp
-struct client_conn {
-    int conn; // 客户端连接符
-    int thread_id; // 线程id
-    SSL* ssl; // SSL客户端连接符
-};
-```
+### 样例文件
 
-**一维参数列表 param**
+~~暂无样例~~
 
-```cpp
-typedef vector<string> param;
-```
+## 更新日志: 
 
-#### 一些函数
+### 1.0.2
 
-**路由添加 void app.addRoute()**
+1. WebServer Core 提供断点续传的样例代码
+2. 规范化日志输出格式
+3. 新增头文件信息
 
-参数列表: 
+### 1.0.1
 
- - 路由路径 `string path`
- - 路由函数 `function<void(client_conn, http_request, param)> func`
+1. 提供对 Windows 系统的支持
+2. WebServer Core 允许多次向客户端发送数据
 
-备注: 
+### 1.0.0
 
-路由路径可使用 `%d(匹配数字)`, `%f(匹配浮点数)`, `%s(匹配字符串)` 进行匹配
-
-**参数设置 bool app.setopt()**
-
-参数列表: 
-
- - 设置参数 `int _t`
- - 参数值 `?`
-
-返回值: `bool` 为是否修改成功
-
-可供选择的参数有: 
-
- - `HTTP_ENABLE_SSL` 是否开启 SSL
- - `HTTP_LISTEN_HOST` 监听主机，`ALL` 为监听所有主机
- - `HTTP_LISTEN_PORT` 监听端口
- - `HTTP_SSL_CACERT` SSL 的 CERT 证书
- - `HTTP_SSL_PRIVKEY` SSL 的 PRIVATE 证书
- - `HTTP_MULTI_THREAD` 线程池大小
-
-...
+1. 第一个版本发布
