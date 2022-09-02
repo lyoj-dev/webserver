@@ -21,6 +21,7 @@
 #include<fcntl.h>
 #include<arpa/inet.h>
 #include<unistd.h>
+#include<syscall.h>
 // 指定Windows环境下头文件 
 #elif __windows__
 #include<Windows.h>
@@ -34,13 +35,93 @@
 #include<pthread.h>
 using namespace std;
 
-const string httpd_version = "1.0.1";
+/** 日志输出库 */
+enum LOG_LEVEL {
+    LOG_LEVEL_NONE,
+    LOG_LEVEL_ERROR,
+    LOG_LEVEL_WARNING,
+    LOG_LEVEL_DEBUG,
+    LOG_LEVEL_INFO
+};
+
+/** 日志文件路径 */
+string log_file_target = "./log.txt";
+/** 日志输出类型 */
+int target_id = 0;
+/** 是否开启Debug模式 */
+bool isDebug = false; 
+ofstream log_fout;
+pthread_mutex_t g_mutex_lock;
+
+/** 日志目标枚举类型 */
+enum LOG_TARGET {
+    LOG_TARGER_NONE = 0,
+    LOG_TARGET_CONSOLE = 1,
+    LOG_TARGET_FILE = 2
+};
+
+/**
+ * @brief 初始化日志结构
+ * 
+ * @param log_target 日志目标类型
+ */
+void log_init(int log_target) {
+    target_id = log_target;
+    if (target_id & LOG_TARGET_FILE) log_fout.open(log_file_target.c_str(), ios::app);
+}
+
+#define writeLog(loglevel, dat) __writeLog(loglevel, __FILE__, __LINE__, dat)
+
+/**
+ * @brief 写入日志
+ * 
+ * @param loglevel 日志等级 
+ * @param fileName 文件名
+ * @param lineNumber 行号
+ * @param dat 数据
+ */
+void __writeLog(LOG_LEVEL loglevel, string fileName, int lineNumber, string dat) {
+    if (!isDebug && loglevel == LOG_LEVEL_DEBUG) return;
+
+    /** 获取当前时间 */
+    stringstream buffer;
+	time_t timep = time(&timep);
+    char tmp[1024] = "";
+    strftime(tmp, sizeof(tmp), "%Y-%m-%d %H:%M:%S", localtime(&timep));
+
+    /** 获取日志等级对应字符串 */
+    string level_str = "";
+    switch(loglevel) {
+        case LOG_LEVEL_NONE: level_str = "NONE"; break;
+        case LOG_LEVEL_INFO: level_str = "INFO"; break;
+        case LOG_LEVEL_WARNING: level_str = "WARNING"; break;
+        case LOG_LEVEL_ERROR: level_str = "ERROR"; break;
+        case LOG_LEVEL_DEBUG: level_str = "DEBUG"; break;
+        default: level_str = "UNKNOWN"; break;		      
+    }
+
+    /** 获取线程id */
+    int tid = -1;
+    #ifdef __linux__
+    tid = syscall(__NR_gettid);
+    #elif __windows__
+    tid = GetCurrentThreadId();
+    #endif
+
+    /** 输出日志 */
+    buffer << "[" << tmp << "] [" << level_str << "] [tid:" << tid << "] [" << fileName << ":" << lineNumber << "] " << dat;
+    pthread_mutex_lock(&g_mutex_lock);
+    if (target_id & LOG_TARGET_CONSOLE) cout << buffer.str() << endl;
+    if (target_id & LOG_TARGET_FILE) log_fout << buffer.str() << endl;
+    pthread_mutex_unlock(&g_mutex_lock);
+}
+
+const string httpd_version = "1.0.3";
 const string magic_string = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";
 map<string, argvar> http_mime;
-pthread_mutex_t g_mutex_lock;
 
 /** 全局参数列表 */
 #define HTTP_ENABLE_SSL 1
@@ -53,24 +134,16 @@ int http_port = 8080; // 监听端口
 string http_cacert = "cert.pem"; // 证书路径
 #define HTTP_SSL_PRIVKEY 5
 string http_privkey = "privkey.pem"; // 私钥路径
+#define LOG_FILE_PATH 7 // 日志文件路径
+#define LOG_TARGET_TYPE 8 // 日志输出类型
+int log_target_type = LOG_TARGET_FILE;
+#define OPEN_DEBUG 9 // 是否开启Debug模式
 /** 全局参数结束 */
 
 const string base64_chars =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz"
         "0123456789+/";
-
-/**
- * @brief 线程格式化输出
- * 
- * @param thread_id 线程id
- * @param info 输出信息
- */
-void output(int thread_id, string info) {
-    pthread_mutex_lock(&g_mutex_lock);
-    cout << "[thread #" << thread_id << "] " << info << endl;
-    pthread_mutex_unlock(&g_mutex_lock);
-}
 
 /**
  * @brief 判断是否为base64字符
@@ -164,6 +237,7 @@ struct client_conn {
     #elif __windows__
     SOCKET conn;
     #endif
+    sockaddr_in client_addr;
     int thread_id;
     SSL* ssl;
 };
@@ -195,9 +269,10 @@ int ws_recv_data(client_conn __fd, char __buf[http_len], int len) {
     if (!https) s = recv(__fd.conn, __buf, len, 0);
     else s = SSL_read(__fd.ssl, __buf, len);
     if (s == -1) {
-        output(__fd.thread_id, "Failed to recieve data!");
+        writeLog(LOG_LEVEL_WARNING, "Failed to recieve data!");
         pthread_exit(NULL);
     }
+    writeLog(LOG_LEVEL_DEBUG, "Recieve " + to_string(s) + " bytes from client.");
     return s;
 }
 
@@ -209,8 +284,13 @@ int ws_recv_data(client_conn __fd, char __buf[http_len], int len) {
  * @return ssize_t 
  */
 ssize_t send(client_conn __fd, string __buf) {
-    if (!https) return send(__fd.conn, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
-    else return SSL_write(__fd.ssl, const_cast<char*>(__buf.c_str()), __buf.size()); 
+    int s = -1;
+    if (!https) s = send(__fd.conn, const_cast<char*>(__buf.c_str()), __buf.size(), 0);
+    else s = SSL_write(__fd.ssl, const_cast<char*>(__buf.c_str()), __buf.size()); 
+    if (s == -1) writeLog(LOG_LEVEL_WARNING, "Failed to send data to client!");
+    else if (s != __buf.size()) writeLog(LOG_LEVEL_WARNING, "The data wasn't send completely! Send " + to_string(s) + "/" + to_string(__buf.size()) + " bytes.");
+    else writeLog(LOG_LEVEL_DEBUG, "Send " + to_string(s) + " bytes to client.");
+    return s;
 }
 
 /**
@@ -252,15 +332,17 @@ ssize_t ws_send(client_conn __fd, string __buf, bool extra = false) {
 
     /** 构造数据帧 */
     for (int i = 0; i < len; i++) dat[pt++] = __buf[i];
+    writeLog(LOG_LEVEL_DEBUG, "Date Frame length: " + to_string(pt));
     
     /** 发送数据帧 */
     int s = -1;
     if (!https) s = send(__fd.conn, dat, pt, 0);
     else s = SSL_write(__fd.ssl, dat, pt);
     if (s == -1) {
-        output(__fd.thread_id, "Failed to send data frame!");
+        writeLog(LOG_LEVEL_WARNING, "Failed to send data frame!");
         pthread_exit(NULL);
-    }
+    } else if (s != pt) writeLog(LOG_LEVEL_WARNING, "The data wasn't send completely! Send " + to_string(s) + "/" + to_string(pt) + " bytes.");
+    else writeLog(LOG_LEVEL_DEBUG, "Send " + to_string(s) + " bytes to client.");
 
     /** 分段发送 */
     if (__buf.size() > MaxL) s += ws_send(__fd, __buf.substr(MaxL), true);
@@ -283,9 +365,11 @@ string recv(client_conn __fd) {
     if (!https) s = recv(__fd.conn, __buf, sizeof __buf, 0);
     else s = SSL_read(__fd.ssl, __buf, sizeof __buf);
     if (s == -1) {
-        output(__fd.thread_id, "Failed to recieve data!");
+        writeLog(LOG_LEVEL_WARNING, "Failed to recieve data!");
         exitRequest(__fd);
-    } return __buf;
+    } 
+    writeLog(LOG_LEVEL_DEBUG, "Recieve " + to_string(s) + " bytes from client.");
+    return __buf;
 }
 
 /**
@@ -302,7 +386,7 @@ string ws_recv(client_conn conn) {
 
     /** 解析头数据 */
     if (s < 2) {
-        output(conn.thread_id, "Invalid WebSocket Data Frame!");
+        writeLog(LOG_LEVEL_WARNING, "Invalid WebSocket Data Frame!");
         pthread_exit(NULL);
     }
     vector<int> frame0 = to2(__buf[0]);
@@ -323,7 +407,7 @@ string ws_recv(client_conn conn) {
         type = 1;
         s = ws_recv_data(conn, __buf, 2);
         if (s < 2) {
-            output(conn.thread_id, "Invalid WebSocket Data Frame!");
+            writeLog(LOG_LEVEL_WARNING, "Invalid WebSocket Data Frame!");
             pthread_exit(NULL);
         }
         len = (getval(to2(__buf[0]), 0, 8) << 8) + getval(to2(__buf[1]), 0, 8);
@@ -334,7 +418,7 @@ string ws_recv(client_conn conn) {
         type = 2;
         s = ws_recv_data(conn, __buf, 8);
         if (s < 8) {
-            output(conn.thread_id, "Invalid WebSocket Data Frame!");
+            writeLog(LOG_LEVEL_WARNING, "Invalid WebSocket Data Frame!");
             pthread_exit(NULL);
         }
         len = 0;
@@ -348,7 +432,7 @@ string ws_recv(client_conn conn) {
     int maskkey[4] = {0};
     s = ws_recv_data(conn, __buf, 4);
     if (s < 4) {
-        output(conn.thread_id, "Invalid WebSocket Data Frame!"); 
+        writeLog(LOG_LEVEL_WARNING, "Invalid WebSocket Data Frame!"); 
         pthread_exit(NULL);
     }
     for (int i = 0; i < 4; i++) maskkey[i] = getval(to2(__buf[i]), 0, 8);
@@ -384,7 +468,7 @@ struct sockaddr_in server_address;
 string http_code[1010];
 SSL_CTX *ctx;
 
-void http_init() {
+void http_init() {writeLog(LOG_LEVEL_DEBUG, "Initializing WebServer Core...");
 
     /** 设置HTTP代码解释 */
     http_code[100] = "Continue";
@@ -432,9 +516,10 @@ void http_init() {
     http_code[503] = "Service Unavailable";
     http_code[504] = "Gateway Time-out";
     http_code[505] = "HTTP Version not supported";
-    
+    writeLog(LOG_LEVEL_DEBUG, "Successfully initialize HTTP Code!");
+
     /** 设置默认响应头 */
-    __default_response["Server"] = "Websocket Server Version " + httpd_version;
+    __default_response["Server"] = "WebSocket Server Version " + httpd_version;
     __default_response["Access-Control-Allow-Origin"] = "*";
     __default_response["Connection"] = "upgrade";
     __default_response["Upgrade"] = "websocket";
@@ -449,25 +534,30 @@ void http_init() {
         /** 初始化SSL_CTX */
         ctx = SSL_CTX_new(SSLv23_server_method());
         if (ctx == NULL) {
-            cout << "Failed to create new ctx!" << endl;
+            writeLog(LOG_LEVEL_ERROR, "Failed to create new CTX!");
             exit(3);
         }
+        writeLog(LOG_LEVEL_DEBUG, "Successfully create new CTX!");
         /** 载入用户的数字证书 */
         if (SSL_CTX_use_certificate_file(ctx, http_cacert.c_str(), SSL_FILETYPE_PEM) <= 0) {
-            cout << "Failed to load cacert!" << endl;
+            writeLog(LOG_LEVEL_ERROR, "Failed to load cacert!");
             exit(3);
         }
+        writeLog(LOG_LEVEL_DEBUG, "Successfully load cacert!");
         /** 载入用户私钥 */
         if (SSL_CTX_use_PrivateKey_file(ctx, http_privkey.c_str(), SSL_FILETYPE_PEM) <= 0) {
-            cout << "Failed to load privkey!" << endl;
+            writeLog(LOG_LEVEL_ERROR, "Failed to load privkey!");
             exit(3);
         }
+        writeLog(LOG_LEVEL_DEBUG, "Successfully load privkey!");
         /** 检查用户私钥是否正确 */
         if (!SSL_CTX_check_private_key(ctx)) {
-            cout << "Incorrect privkey!" << endl;
+            writeLog(LOG_LEVEL_ERROR, "Incorrect privkey!");
             exit(3);
-        }    
+        }
+        writeLog(LOG_LEVEL_DEBUG, "Successfully check correctness of the cacert and privkey!");
     }
+    
     /** 初始化服务端socket */
     #ifdef __linux__
     bzero(&server_address, sizeof(server_address));
@@ -476,11 +566,11 @@ void http_init() {
 	WSADATA wsadata; int err;
 	err = WSAStartup(w_req, &wsadata);
 	if (err != 0) {
-        cout << "Failed to initialize SOCKET!" << endl;
+        writeLog(LOG_LEVEL_ERROR, "Failed to initialize SOCKET!");
         exit(3);
     }
 	if (LOBYTE(wsadata.wVersion) != 2 || HIBYTE(wsadata.wHighVersion) != 2) {
-        cout << "SOCKET version is not correct!" << endl;
+        writeLog(LOG_LEVEL_ERROR, "SOCKET version is not correct!");
         exit(3);
     }
     #endif
@@ -489,9 +579,10 @@ void http_init() {
     server_address.sin_port = htons(http_port);
     sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
-        cout << "Failed to initialize socket!" << endl;
+        writeLog(LOG_LEVEL_ERROR, "Failed to initialize socket!");
         exit(3);
     }
+    writeLog(LOG_LEVEL_DEBUG, "Successfully initialize socket!");
 
     /** 绑定服务端socket */
     #ifdef __linux__
@@ -500,9 +591,10 @@ void http_init() {
     #endif
     int ret = bind(sock, (struct sockaddr*)&server_address, sizeof(server_address));
     if (ret == -1) {
-        cout << "Failed to bind socket!" << endl;
+        writeLog(LOG_LEVEL_ERROR, "Failed to bind socket!");
         exit(3);
     }
+    writeLog(LOG_LEVEL_DEBUG, "Successfully bind socket!");
 
     /** 设置服务端监听态 */
     ret = listen(sock,1);
@@ -510,6 +602,7 @@ void http_init() {
         cout << "Failed to listen to client!" << endl;
         exit(3);
     }
+    writeLog(LOG_LEVEL_DEBUG, "Successfully listen to client!");
 }
 
 struct sockaddr_in client;
@@ -522,14 +615,17 @@ int client_addrlength = sizeof(client);
 /**
  * @brief 接收客户端socket
  * 
+ * @param client_addr 客户端地址
  * @return int 
  */
-int accept() {
+int accept(sockaddr_in& client_addr) {
     int ret = accept(sock, (struct sockaddr*)&client, &client_addrlength);
     if (ret < 0) {
-        cout << "Failed to accept request!" << endl;
+        writeLog(LOG_LEVEL_WARNING, "Failed to connect to client: connection refused abruptly!");
         pthread_exit(NULL);
     }
+    client_addr = client;
+    writeLog(LOG_LEVEL_DEBUG, "Connect to the client, socket id: " + to_string(ret));
     return ret;
 }
 
@@ -561,6 +657,7 @@ void exitRequest(client_conn& conn) {
     #elif __windows__
     closesocket(conn.conn);
     #endif
+    writeLog(LOG_LEVEL_INFO, "Close connection of conn " + to_string(conn.conn));
     pthread_exit(NULL);
 }
 
@@ -574,15 +671,20 @@ http_request getRequest(client_conn& conn) {
 
     /** 获取请求头 */
     string s = recv(conn);
-    if (s == "") exitRequest(conn);
+    if (s == "") {
+        writeLog(LOG_LEVEL_WARNING, "Empty Request Header!");
+        exitRequest(conn);
+    }
+    writeLog(LOG_LEVEL_DEBUG, "Recieved Request Header from client!");
 
     /** 判断请求方式 */
     vector<string> __arg = explode("\r\n", s.c_str());
     if (__arg.size() < 1) {
-        output(conn.thread_id, "Invalid HTTP Request!");
+        writeLog(LOG_LEVEL_WARNING, "Invalid HTTP Request in line 1: eof!");
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     } 
+    writeLog(LOG_LEVEL_DEBUG, "Request Header lines: " + to_string(__arg.size()));
 
     /** 读取请求头的第一行 */
     vector<string> header = explode(" ", __arg[0].c_str());
@@ -591,7 +693,7 @@ http_request getRequest(client_conn& conn) {
         header[0] != "PUT" && header[0] != "DELETE" && header[0] != "CONNECT" && 
         header[0] != "OPTIONS" && header[0] != "TRACE" && header[0] != "PATCH"
     )) {
-        output(conn.thread_id, "Invalid HTTP Request!");
+        writeLog(LOG_LEVEL_WARNING, "Invalid HTTP Request in line 1: Invalid Request Method!");
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     }
@@ -599,6 +701,7 @@ http_request getRequest(client_conn& conn) {
     request.method = header[0];
     request.path = header[1];
     request.protocol = header[2];
+    writeLog(LOG_LEVEL_DEBUG, "Request Info: " + header[0] + " " + header[1] + " " + header[2]);
 
     /** 读取请求头参数 */
     int pt = 1;
@@ -612,6 +715,8 @@ http_request getRequest(client_conn& conn) {
     pt++;
     if (pt < __arg.size()) 
         request.postdata = __arg[pt];
+    writeLog(LOG_LEVEL_DEBUG, "Request Parameters: " + to_string(request.argv.size()));
+
 
     /** 返回请求头信息 */
     return request;
@@ -629,21 +734,23 @@ void putRequest(client_conn& conn, int code, argvar argv) {
 
     /** 判断响应代码 */
     if (code <= 0 || code >= 1000 || http_code[code] == "") {
-        output(conn.thread_id, "Invalid Response Code!");
+        writeLog(LOG_LEVEL_WARNING, "Invalid Response Code!");
         putRequest(conn, 500, __default_response);
         exitRequest(conn);
     }
+    writeLog(LOG_LEVEL_DEBUG, "Valid Response Code!");
 
     /** 构造响应头 */
     stringstream __buf;
     __buf << "HTTP/1.1 " << code << " " << http_code[code] << "\r\n";
+    writeLog(LOG_LEVEL_DEBUG, "Response Info: HTTP/1.1 " + to_string(code) + " " + http_code[code]);
     for (auto it = argv.begin(); it != argv.end(); it++)
         __buf << (*it).first << ": " << (*it).second << "\r\n";
     __buf << "\r\n";
 
     /** 发送响应头 */
+    writeLog(LOG_LEVEL_DEBUG, "Send Response Header to client");
     int s = send(conn, __buf.str());
-    if (s == -1) output(conn.thread_id, "Invalid send Response Header!");
 }
 
 /**
@@ -653,23 +760,30 @@ void putRequest(client_conn& conn, int code, argvar argv) {
  * @return argvar
  */
 argvar getParam(http_request request) {
+    writeLog(LOG_LEVEL_DEBUG, "Analysing GET parameters...");
 
     /** 读取路径信息 */
     string path = request.path;
-    if (path.find("?") == string::npos) return _e;
+    if (path.find("?") == string::npos) {
+        writeLog(LOG_LEVEL_DEBUG, "Empty GET parameters!");
+        return _e;
+    }
 
     /** 提取参数信息 */
     string param = path.substr(path.find("?") + 1);
     vector<string> __arg = explode("&", param.c_str());
+    writeLog(LOG_LEVEL_DEBUG, "GET parameter length: " + to_string(__arg.size()));
 
     /** 逐个处理 */
     argvar $_GET;
     for (int i = 0; i < __arg.size(); i++) {
         if (__arg[i].find("=") == string::npos) 
+            writeLog(LOG_LEVEL_DEBUG, "Could find value of key \"" + __arg[i] + "\""),
             $_GET.insert(make_pair(__arg[i], ""));
         else {
             string key = __arg[i].substr(0, __arg[i].find("="));
             string val = __arg[i].substr(__arg[i].find("=") + 1);
+            writeLog(LOG_LEVEL_DEBUG, "Add key \"" + key + "\" $_GET");
             $_GET.insert(make_pair(key, val));
         }
     } 
@@ -685,19 +799,24 @@ argvar getParam(http_request request) {
  * @return argvar 
  */
 argvar postParam(http_request request) {
+    writeLog(LOG_LEVEL_DEBUG, "Analysing POST parameters...");
+
 
     /** 提取参数信息 */
     vector<string> __arg = explode("&", request.postdata.c_str());
+    writeLog(LOG_LEVEL_DEBUG, "POST parameter length: " + to_string(__arg.size()));
 
     /** 逐个处理 */
     argvar $_POST;
     for (int i = 0; i < __arg.size(); i++) {
         if (__arg[i] == "") continue;
         if (__arg[i].find("=") == string::npos) 
+            writeLog(LOG_LEVEL_DEBUG, "Could find value of key \"" + __arg[i] + "\""),
             $_POST.insert(make_pair(__arg[i], ""));
         else {
             string key = __arg[i].substr(0, __arg[i].find("="));
             string val = __arg[i].substr(__arg[i].find("=") + 1);
+            writeLog(LOG_LEVEL_DEBUG, "Add key \"" + key + "\" $_POST");
             $_POST.insert(make_pair(key, val));
         }
     } 
@@ -713,20 +832,26 @@ argvar postParam(http_request request) {
  * @return argvar 
  */
 argvar cookieParam(http_request request) {
+    writeLog(LOG_LEVEL_DEBUG, "Analysing COOKIE parameters...");
     
     /**  获取Cookie字符串 */
-    if (request.argv.find("Cookie") == request.argv.end()) return _e;
+    if (request.argv.find("Cookie") == request.argv.end()) {
+        writeLog(LOG_LEVEL_DEBUG, "Empty COOKIE parameters!");
+        return _e;
+    }
     string s = request.argv["Cookie"];
 
     /** 拆散字符串 */
     vector<string> arr = explode("; ", s.c_str());
+    writeLog(LOG_LEVEL_DEBUG, "COOKIE parameter length: " + to_string(arr.size()));
     argvar $_COOKIE;
     for (int i = 0; i < arr.size(); i++) {
         if (arr[i].find("=") != string::npos) {
             string key = arr[i].substr(0, arr[i].find("="));
             string val = arr[i].substr(arr[i].find("=") + 1);
+            writeLog(LOG_LEVEL_DEBUG, "Add key \"" + key + "\" to $_COOKIE");
             $_COOKIE.insert(make_pair(key, val));
-        }
+        } else writeLog(LOG_LEVEL_WARNING, "Invalid COOKIE parameter!");
     }
 
     /** 返回 */
@@ -840,20 +965,39 @@ class application {
          * @param port 运行端口
          */
         void run() {
+            log_init(log_target_type);
+            writeLog(LOG_LEVEL_DEBUG, "Successfully initialize log system!");
+            writeLog(LOG_LEVEL_DEBUG, string("Read option HTTP_ENABLE_SSL = ") + string(https ? "true" : "false"));
+            writeLog(LOG_LEVEL_DEBUG, "Read option HTTP_LISTEN_HOST = \"" + http_host + "\"");
+            writeLog(LOG_LEVEL_DEBUG, "Read option HTTP_LISTEN_PORT = " + to_string(http_port));
+            writeLog(LOG_LEVEL_DEBUG, "Read option HTTP_SSL_CACERT = \"" + http_cacert + "\"");
+            writeLog(LOG_LEVEL_DEBUG, "Read option HTTP_SSL_PRIVKEY = \"" + http_privkey + "\"");
+            writeLog(LOG_LEVEL_DEBUG, "Read option LOG_FILE_PATH = \"" + log_file_target + "\"");
+            writeLog(LOG_LEVEL_DEBUG, "Read option LOG_TARGET_TYPE = " + to_string(log_target_type));
+            writeLog(LOG_LEVEL_DEBUG, string("Read option OPEN_DEBUG = ") + string(isDebug ? "true" : "false"));
+
+            #ifdef __linux__
             sigset_t signal_mask;
             sigemptyset(&signal_mask);
             sigaddset(&signal_mask, SIGPIPE);
             int rc = pthread_sigmask(SIG_BLOCK, &signal_mask, NULL);
             if (rc != 0) {
-                cout << "Failed to block SIGPIPE!" << endl;
+                writeLog(LOG_LEVEL_ERROR, "Failed to block SIGPIPE!");
                 exit(3);
             }
+            writeLog(LOG_LEVEL_DEBUG, "Successfully block SIGPIPE!");
+            #endif
+
             http_init();
-            cout << "Listening..." << endl;
+            writeLog(LOG_LEVEL_INFO, "Listening...");
             while(1) {
-                int conn = accept();
+                sockaddr_in client_addr;
+                int conn = accept(client_addr);
                 pthread_t pt;
-                pthread_create(&pt, NULL, work_thread, (void*)&conn);
+                client_conn conn2;
+                conn2.conn = conn;
+                conn2.client_addr = client_addr;
+                pthread_create(&pt, NULL, work_thread, (void*)&conn2);
             }
         }
 
@@ -874,6 +1018,9 @@ class application {
                 case HTTP_LISTEN_PORT: http_port = va_arg(arg, int); break;
                 case HTTP_SSL_CACERT: http_cacert = va_arg(arg, const char*); break;
                 case HTTP_SSL_PRIVKEY: http_privkey = va_arg(arg, const char*); break;
+                case LOG_FILE_PATH: log_file_target = va_arg(arg, const char*); break;
+                case LOG_TARGET_TYPE: log_target_type = va_arg(arg, int); break;
+                case OPEN_DEBUG: isDebug = va_arg(arg, int); break;
                 default: return false;
             }
             return true;
@@ -900,8 +1047,10 @@ int get_thread_id() {
  * @return void* 
  */
 void* work_thread(void* arg) {
-    int conn = *(int*)arg;
+    int conn = ((client_conn*)arg)->conn;
+    sockaddr_in client_addr = ((client_conn*)arg)->client_addr;
     int thread_id = get_thread_id();
+    writeLog(LOG_LEVEL_DEBUG, "Created thread #" + to_string(thread_id));
 
     SSL* ssl;
     if (https) {
@@ -909,7 +1058,11 @@ void* work_thread(void* arg) {
         ssl = SSL_new(ctx);
         /** 将连接用户的 socket 加入到 SSL */
         SSL_set_fd(ssl, conn);
-        if (SSL_accept(ssl) == -1) pthread_exit(NULL);
+        if (SSL_accept(ssl) == -1) {
+            writeLog(LOG_LEVEL_WARNING, "Failed to accept SSL of connection " + to_string(conn));
+            pthread_exit(NULL);
+        }
+        writeLog(LOG_LEVEL_WARNING, "Accepted SSL of connection " + to_string(conn));
     }
     
     /** 获取新连接 */
@@ -920,9 +1073,9 @@ void* work_thread(void* arg) {
     http_request request = getRequest(conn2);
     stringstream buffer;
 
-    buffer << "New Connection: " << request.method << " " << request.path;
-    output(thread_id, buffer.str());
-
+    writeLog(LOG_LEVEL_INFO, "New Connection: " + request.method + " " + request.path + 
+                             " [" + inet_ntoa(client_addr.sin_addr) + ":" + to_string(client_addr.sin_port) + "]");
+ 
     /** 提取路径 */
     string rlpath = request.path;
     if (rlpath.find("?") != string::npos) 
@@ -931,12 +1084,11 @@ void* work_thread(void* arg) {
     /** 分发路由 */
     for (int i = 0; i < app.route.size(); i++) {
         if (app.matchPath(app.route[i], rlpath)) {
+            writeLog(LOG_LEVEL_DEBUG, "Matched route \"" + app.route[i].path + "\"");
 
             /** 计算Sec_WebSocket_Accept的值 */
             if (request.argv.find("Sec-WebSocket-Key") == request.argv.end()) {
-                buffer.str("");
-                buffer << "Invalid WebSocket Request!";
-                output(thread_id, buffer.str());
+                writeLog(LOG_LEVEL_WARNING, "Invalid WebSocket Request!");
                 pthread_exit(NULL);
             }
             string req_key = request.argv["Sec-WebSocket-Key"];
@@ -954,7 +1106,7 @@ void* work_thread(void* arg) {
 
             buffer.str("");
             buffer << "Secure WebSocket Accept: " << sec_key;
-            output(thread_id, buffer.str());
+            writeLog(LOG_LEVEL_INFO, buffer.str());
             putRequest(conn2, 101, ret);
             
             /** 参数提取 */
@@ -976,6 +1128,7 @@ void* work_thread(void* arg) {
     }
 
     /** 无效路由 */
+    writeLog(LOG_LEVEL_DEBUG, "Couldn't find any routes for this request!");
     putRequest(conn2, 404, __default_response);
     exitRequest(conn2);
 

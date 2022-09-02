@@ -45,6 +45,12 @@ WebSocket 服务端: `g++ websocket.cpp -owebsocket -lpthread -lcrypto -lssl`
 
 ## 更新日志: 
 
+### 1.0.3
+
+1. 新增完整日志输出系统
+2. `client_conn` 结构体中新增客户端地址信息 `client_addr`
+3. 修复了 Windows 编译时无法屏蔽 SIGPIPE 信号导致的编译错误
+
 ### 1.0.2
 
 1. WebServer Core 提供断点续传的样例代码

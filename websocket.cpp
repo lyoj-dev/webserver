@@ -8,7 +8,9 @@ int main() {
         exitRequest(conn);
     });
     app.setopt(HTTP_ENABLE_SSL, false);
-    app.setopt(HTTP_LISTEN_HOST, "ALL");
     app.setopt(HTTP_LISTEN_PORT, 8080);
+    app.setopt(HTTP_LISTEN_HOST, "0.0.0.0");
+    app.setopt(LOG_TARGET_TYPE, LOG_TARGET_FILE);
+    app.setopt(OPEN_DEBUG, false);
     app.run();
 }
