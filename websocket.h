@@ -2,8 +2,8 @@
  * @file websocket.h
  * @author LittleYang0531 (dev@lyoj.ml)
  * @brief WebSocket服务器核心头文件
- * @version 1.0.2
- * @date 2022-09-01
+ * @version 1.0.3
+ * @date 2022-09-02
  * 
  * @copyright Copyright (c) 2022
  * 
