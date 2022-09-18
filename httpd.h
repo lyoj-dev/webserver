@@ -2,8 +2,8 @@
  * @file httpd.h
  * @author LittleYang0531 (dev@lyoj.ml)
  * @brief Web服务器核心头文件
- * @version 1.0.3
- * @date 2022-09-02
+ * @version 1.0.4
+ * @date 2022-09-18
  * 
  * @copyright Copyright (c) 2022 LittleYang0531
  * 
@@ -385,7 +385,7 @@ int accept(sockaddr_in& client_addr) {
     int ret = accept(sock, (struct sockaddr*)&client, &client_addrlength);
     if (ret < 0) {
         writeLog(LOG_LEVEL_WARNING, "Failed to connect to client: connection refused abruptly!");
-        pthread_exit(NULL);
+        return -1;
     }
     client_addr = client;
     writeLog(LOG_LEVEL_DEBUG, "Connect to the client, socket id: " + to_string(ret));
@@ -873,6 +873,8 @@ class application {
             /** 拆散字符串 */
             vector<string> __goal = explode("/", __route.path.c_str());
             vector<string> __path = explode("/", path.c_str());
+            while (__goal.size() && __goal.back() == "") __goal.pop_back();
+            while (__path.size() && __path.back() == "") __path.pop_back();
             if (__goal.size() != __path.size()) return false;
 
             /** 逐个判断 */
@@ -935,6 +937,7 @@ class application {
             while(1) {
                 sockaddr_in client_addr;
                 int conn = accept(client_addr);
+                if (conn == -1) continue;
                 pool.addConn(conn, client_addr);
             }
         }
@@ -966,6 +969,53 @@ class application {
         }
 }app;
 
+/** url解码字表 */
+static unsigned char dec_tab[256] = {
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  0,  0,  0,  0,  0,  0,
+    0, 10, 11, 12, 13, 14, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0, 10, 11, 12, 13, 14, 15,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+};
+
+/**
+ * @brief url解码
+ * 
+ * @param str 源字符串
+ * @return string
+ */
+string urldecode(string str){
+    int len = str.size();
+    char *tmp = (char *)malloc(len + 1);
+    int i = 0, pos = 0;
+    for (i = 0; i < len; i++) {
+        if (str[i] != '%') tmp[pos] = str[i];
+        else if (i + 2 >= len) {
+            tmp[pos++] = '%';
+            if (++i >= len) break;
+            tmp[pos] = str[i];
+            break;
+        } else if (isalnum(str[i + 1]) && isalnum(str[i + 2])) {
+            tmp[pos] = (dec_tab[(unsigned char) str[i + 1]] << 4) + dec_tab[(unsigned char) str[i + 2]];
+            i += 2;
+        } else tmp[pos] = str[i];
+        pos++;
+    }
+    tmp[pos] = '\0';
+    return tmp;
+}
+
 /**
  * @brief 工作线程主函数
  * 
@@ -974,6 +1024,11 @@ void thread_pool::work_thread() {
     int id = this->get_thread_id();
     writeLog(LOG_LEVEL_DEBUG, "Created thread #" + to_string(id));
     while (1) {
+        #ifdef __linux__
+        usleep(1000 * 1);
+        #elif __windows__
+        Sleep(1);
+        #endif
         setjmp(buf[id]);
         sockaddr_in client_addr;
         int conn = this->getConn(client_addr);
