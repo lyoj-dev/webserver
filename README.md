@@ -45,6 +45,11 @@ WebSocket 服务端: `g++ websocket.cpp -owebsocket -lpthread -lcrypto -lssl`
 
 ## 更新日志: 
 
+### 1.0.4
+
+1. 修复 WebServer Core & WebSocket Server Core 中 CPU 高占用的问题。
+2. 新增 url 解码功能
+
 ### 1.0.3
 
 1. 新增完整日志输出系统
