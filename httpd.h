@@ -8,6 +8,7 @@
  * @copyright Copyright (c) 2022 LittleYang0531
  * 
  */
+const std::string httpd_version = "1.0.4";
 
 #ifndef _HTTPD_H_
 #define _HTTPD_H_
@@ -115,7 +116,6 @@ void __writeLog(LOG_LEVEL loglevel, string fileName, int lineNumber, string dat)
     pthread_mutex_unlock(&g_mutex_lock);
 }
 
-const string httpd_version = "1.0.3";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
 string _endl = "<br/>";

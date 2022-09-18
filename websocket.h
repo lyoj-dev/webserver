@@ -5,9 +5,10 @@
  * @version 1.0.4
  * @date 2022-09-18
  * 
- * @copyright Copyright (c) 2022
+ * @copyright Copyright (c) 2022 LittleYang0531
  * 
  */
+const std::string httpd_version = "1.0.4";
 
 #ifndef _WEBSOCKET_H_
 #define _WEBSOCKET_H_
@@ -116,7 +117,6 @@ void __writeLog(LOG_LEVEL loglevel, string fileName, int lineNumber, string dat)
     pthread_mutex_unlock(&g_mutex_lock);
 }
 
-const string httpd_version = "1.0.3";
 const string magic_string = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 typedef map<string, string> argvar;
 argvar _e, __default_response;
