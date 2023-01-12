@@ -8,7 +8,7 @@ WebSocket 服务端: `g++ websocket.cpp -owebsocket -lpthread -lcrypto -lssl`
 
 ## 示例项目:
 
-[LittleYang0531/sonolus-server-cpp](LittleYang0531/sonolus-server-cpp): 由 C++ 与 MySQL 编写的适用于新一代音游 Sonolus 的自定义服务器
+(LittleYang0531/sonolus-server-cpp)[https://github.com/LittleYang0531/sonolus-server-cpp]: 由 C++ 与 MySQL 编写的适用于新一代音游 Sonolus 的自定义服务器
 
 ## Web Server Core
 
